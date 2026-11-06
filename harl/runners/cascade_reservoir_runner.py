@@ -142,7 +142,6 @@ class CascadeReservoirRunner(OnPolicyHARunner):
             raise ValueError('checkpoint_interval requires checkpoint output')
         self.checkpoint_history = []
         self.diagnostics_enabled = bool(args['experiment'].get('diagnostics', False) or trajectory_log is not None)
-        self.joint_kl_info = None
         self.parallel_envs = None
         self.worker_pids = []
 
@@ -271,10 +270,7 @@ class CascadeReservoirRunner(OnPolicyHARunner):
             record.update(parallel_env_index=lane, parallel_envs=self.n_envs,
                 episodes_per_update=self.n_envs, collecting_for_update=self.update_count+1,
                 policy_updates_completed=self.update_count, training_steps=self.collected_training_steps,
-                ppo_epochs_max=self.requested_args['algo']['ppo_epoch'],
-                actor_target_kl=self.requested_args['algo'].get('target_kl'),
-                actor_kl_rollback=self.requested_args['algo'].get('kl_rollback', False),
-                joint_target_kl=self.requested_args['algo'].get('joint_target_kl'))
+                ppo_epochs_max=self.requested_args['algo']['ppo_epoch'])
             self.episode_history.append(record)
             log_episode(record, self.episode_log)
             metrics.append(result['reward_metrics'])
@@ -344,19 +340,12 @@ class CascadeReservoirRunner(OnPolicyHARunner):
                 if not all(np.isfinite(value) for value in row.values()):
                     raise FloatingPointError('Non-finite training diagnostics')
                 self.training_history.append(row)
-                optimization_keys = ('optimizer_steps','optimizer_attempts','optimizer_rejected_steps',
-                    'ppo_epochs_completed','ppo_epochs_attempted','kl_early_stopped','policy_kl',
-                    'rejected_policy_kl','joint_target_kl','joint_policy_kl','joint_actor_kl',
-                    'joint_kl_remaining','rejected_joint_policy_kl','joint_kl_early_stopped',
-                    'joint_kl_before','joint_actor_budget')
+                optimization_keys = ('optimizer_steps','ratio_samples','ppo_epochs_completed')
                 log_episode(dict(record_type='training_update', seed=self.seed, update=self.update_count,
                     episode=self.completed_episodes, training_steps=self.training_steps,
                     window_start_years=self.batch_window_starts, source_years_by_episode=self.batch_source_years,
                     episode_lengths=self.batch_episode_lengths, episode_horizon_days=self.length,
                     parallel_envs=self.n_envs, ppo_epochs_max=self.requested_args['algo']['ppo_epoch'],
-                    actor_target_kl=self.requested_args['algo'].get('target_kl'),
-                    actor_kl_rollback=self.requested_args['algo'].get('kl_rollback',False),
-                    joint_target_kl=self.requested_args['algo'].get('joint_target_kl'),joint_kl=self.joint_kl_info,
                     actor_optimization=[{key:float(info[key]) for key in optimization_keys if key in info}
                         for info in actor_info], episode_reward_mean=self.last_reward_metrics['episode_reward'],
                     episode_generation_TWh_mean=self.last_rollout['episode_energy_TWh'],
@@ -364,8 +353,6 @@ class CascadeReservoirRunner(OnPolicyHARunner):
                 if self.diagnostics_enabled:
                     from harl.envs.cascade_reservoir.diagnostics import after_update, print_update_window
                     report = after_update(self, diagnostic_before)
-                    if self.joint_kl_info is not None:
-                        report['joint_kl'] = self.joint_kl_info
                     for actor_row, info in zip(report['actors'], actor_info):
                         actor_row['optimization'] = {key:float(info[key]) for key in optimization_keys if key in info}
                         actor_row['surrogate'] = {key:float(value) for key,value in info.items()

@@ -53,8 +53,6 @@ def validate_algorithms(algorithms):
 def comparison_preflight(args, config):
     """Check every requested output and unsupported setting before any training."""
     algorithms = validate_algorithms(args.algorithms)
-    if 'mappo' in algorithms and config['algo'].get('joint_target_kl') is not None:
-        raise ValueError('MAPPO comparison does not support joint_target_kl; use --no-joint-kl-limit')
     if 'happo' in algorithms and config['algo'].get('share_param', False):
         raise ValueError('HAPPO retains five independent actors; its share_param must be false')
     paths = [] if args.episode_log is None else [Path(args.episode_log)]

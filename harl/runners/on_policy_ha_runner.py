@@ -3,8 +3,6 @@ import numpy as np
 import torch
 from harl.utils.trans_tools import _t2n
 from harl.runners.on_policy_base_runner import OnPolicyBaseRunner
-from harl.algorithms.actors.happo import validate_joint_target_kl
-from harl.algorithms.actors.joint_kl import JointKLBudget
 
 
 class OnPolicyHARunner(OnPolicyBaseRunner):
@@ -13,12 +11,6 @@ class OnPolicyHARunner(OnPolicyBaseRunner):
     def train(self):
         """Train the model."""
         actor_train_infos = [None] * self.num_agents
-        joint_target = validate_joint_target_kl(
-            self.algo_args['algo'].get('joint_target_kl'),
-            self.algo_args['algo'].get('kl_rollback', False))
-        joint_budget = (None if joint_target is None else
-                        JointKLBudget(self.actor, self.actor_buffer, joint_target))
-        self.joint_kl_info = None
 
         # factor is used for considering updates made by previous agents
         factor = np.ones(
@@ -83,8 +75,6 @@ class OnPolicyHARunner(OnPolicyBaseRunner):
 
             # update actor
             train_options = ({'diagnostics': True} if getattr(self, 'diagnostics_enabled', False) else {})
-            if joint_budget is not None:
-                train_options['joint_kl_guard'] = joint_budget.for_actor(agent_id)
             # The likelihood factor remains scalar and unchanged. Each actor
             # optimizes its own mixed-return surrogate, using its own value/GAE
             # channel. This does not imply improvement of the system accounting
@@ -132,14 +122,6 @@ class OnPolicyHARunner(OnPolicyBaseRunner):
             actor_train_info["factor_max"] = float(factor.max())
             actor_train_info["factor_min"] = float(factor.min())
             actor_train_infos[agent_id] = actor_train_info
-
-        if joint_budget is not None:
-            self.joint_kl_info = dict(target_kl=joint_target, policy_kl=joint_budget.total_kl,
-                remaining_kl=max(0., joint_target-joint_budget.total_kl),
-                common_rollout_rows=joint_budget.row_count,
-                actors_stopped=sum(info['joint_kl_early_stopped'] for info in actor_train_infos),
-                actor_order=[int(i) for i in agent_order],
-                actor_contributions=list(joint_budget.contributions))
 
         # update critic
         critic_train_info = self.critic.train(self.critic_buffer, self.value_normalizer)

@@ -165,19 +165,28 @@ class ComparisonDispatchTest(unittest.TestCase):
                 if kind != 'checkpoints':
                     self.assertEqual(collision.read_text(encoding='utf-8'), 'pre-existing output')
 
-    def test_joint_kl_is_rejected_by_cli_before_loading_data_or_training(self):
-        for arguments in ([], ['--algorithms', 'mappo']):
-            with self.subTest(arguments=arguments), \
-                    mock.patch.object(cli, 'CascadeData') as data_factory, \
-                    mock.patch.object(compare, 'run_parallel_experiment') as helper, \
-                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
-                with self.assertRaises(SystemExit) as raised:
-                    compare.main(arguments+['--no-plot', '--target-kl', '.01',
-                                            '--kl-rollback', '--joint-target-kl', '.03'])
-                self.assertEqual(raised.exception.code, 2)
-                self.assertIn('does not support joint_target_kl', errors.getvalue())
-                data_factory.assert_not_called()
-                helper.assert_not_called()
+    def test_removed_kl_flags_are_rejected_before_configuration_data_or_training(self):
+        removed_arguments = (['--target-kl', '.01'], ['--no-kl-limit'],
+                             ['--kl-rollback'], ['--no-kl-rollback'],
+                             ['--joint-target-kl', '.03'], ['--no-joint-kl-limit'])
+        for entry_point in ('happo', 'comparison'):
+            for arguments in removed_arguments:
+                with self.subTest(entry_point=entry_point, flag=arguments[0]), \
+                        mock.patch.object(cli, 'load_configuration') as configuration, \
+                        mock.patch.object(cli, 'CascadeData') as data_factory, \
+                        mock.patch.object(compare, 'run_parallel_experiment') as helper, \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                    with self.assertRaises(SystemExit) as raised:
+                        if entry_point == 'happo':
+                            cli.main(['--no-plot']+arguments, experiment_runner=helper)
+                        else:
+                            compare.main(['--no-plot']+arguments)
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertIn('unrecognized arguments:', errors.getvalue())
+                    self.assertIn(arguments[0], errors.getvalue())
+                    configuration.assert_not_called()
+                    data_factory.assert_not_called()
+                    helper.assert_not_called()
 
     def test_original_entry_point_and_happo_training_dispatch_remain_defaults(self):
         self.assertIs(CascadeReservoirRunner.actor_class, HAPPO)
@@ -203,8 +212,7 @@ class ShortComparisonIntegrationTest(unittest.TestCase):
         cls.config, cls.physical = cli.load_configuration()
         cls.config['train'].update(episode_length=4, n_rollout_threads=2)
         cls.config['model'].update(hidden_sizes=[8, 8], action_bins=7)
-        cls.config['algo'].update(ppo_epoch=1, critic_epoch=1, target_kl=None,
-                                 kl_rollback=False, joint_target_kl=None)
+        cls.config['algo'].update(ppo_epoch=1, critic_epoch=1)
         cls.config['experiment'].update(episodes=2, seeds=[1, 2, 3], diagnostics=False,
             trajectory_diagnostics=False, save_checkpoints=False, checkpoint_interval=0,
             xld_diagnostics=False)
@@ -352,8 +360,7 @@ class SharedMAPPOTrainingDispatchTest(unittest.TestCase):
     def test_five_own_channels_use_one_joint_actor_update_and_one_critic_update(self):
         runner = OnPolicyMARunner()
         runner.num_agents = 5
-        runner.algo_args = dict(algo=dict(share_param=True, joint_target_kl=None,
-                                         normalize_shared_advantages=True))
+        runner.algo_args = dict(algo=dict(share_param=True, normalize_shared_advantages=True))
         runner.diagnostics_enabled = True
         raw = np.arange(48, dtype=np.float32).reshape(4, 2, 6)
         runner.critic_buffer = SimpleNamespace(returns=raw**2, value_preds=raw/7.)
@@ -392,7 +399,6 @@ class SharedMAPPOTrainingDispatchTest(unittest.TestCase):
         core.share_param_train.assert_called_once()
         runner.critic.train.assert_called_once_with(runner.critic_buffer, runner.value_normalizer)
         self.assertEqual(critic_info['value_loss'], 0.)
-        self.assertIsNone(runner.joint_kl_info)
         self.assertEqual(len({id(info) for info in infos}), 5)
         for actor, info in zip(runner.actor, infos):
             actor.train.assert_not_called()

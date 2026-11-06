@@ -9,9 +9,6 @@ class OnPolicyMARunner(OnPolicyBaseRunner):
 
     def train(self):
         """Use the same per-agent return channels and critic update as HAPPO."""
-        if self.algo_args['algo'].get('joint_target_kl') is not None:
-            raise ValueError('MAPPO does not support joint_target_kl')
-        self.joint_kl_info = None
         if self.value_normalizer is not None:
             advantages = self.critic_buffer.returns[:-1] - self.value_normalizer.denormalize(
                 self.critic_buffer.value_preds[:-1])

@@ -102,10 +102,9 @@ regularization. It has
 no HAPPO sequential likelihood correction and no command-imitation objective.
 Its shared buffer factor slot is checked to be all ones and is not multiplied
 into the loss. The critic update and reservoir collection/evaluation lifecycle
-are reused. Optional local KL stopping/rollback monitors each HAPPO actor or the
-pooled ID-conditioned MAPPO policy respectively;
-the HAPPO-specific joint sequential KL budget is rejected for MAPPO before
-training (`--no-joint-kl-limit` selects the compatible default).
+are reused. Both algorithms use PPO probability-ratio clipping and gradient-norm
+clipping. With `--diagnostics`, KL divergence is measured after updates for
+reporting; it does not stop epochs or reject optimizer steps.
 
 This is a task-adapted, parameter-sharing MAPPO comparison. HARL's generic
 EP default uses a common scalar reward/value; this task retains its existing
@@ -283,7 +282,6 @@ reward settings. CLI arguments override their corresponding YAML values.
 | PPO clip / entropy coefficient | 0.2 / 0.001 |
 | Maximum gradient norm | 0.5 |
 | ValueNorm / per-actor advantage normalization | Enabled / enabled |
-| Actor / joint KL limits | Disabled unless requested |
 | Daily water-level limits | New action-date CSV, enabled |
 | Periodic evaluation interval / scenarios | Every update / 3 fixed training-only windows |
 | Training-window sampling | `coverage_balanced`; `uniform` restores the previous sampler |
@@ -783,7 +781,7 @@ comes from the fingerprinted dataset; no full-storage reset is substituted.
 | `harl/envs/cascade_reservoir/trajectory_diagnostics.py` | Optional per-reservoir physical and frozen learning traces |
 | `harl/envs/cascade_reservoir/checkpoint.py` | Evaluation checkpoint persistence, strict provenance checks and deterministic replay |
 | `harl/runners/on_policy_ha_runner.py` | Sequential HAPPO updates and likelihood factors |
-| `harl/algorithms/` | Actor and critic objectives, optimizer steps and optional KL controls |
+| `harl/algorithms/` | Actor and critic objectives and optimizer steps |
 | `harl/envs/cascade_reservoir/` | Data, episode views, workers, current-transition physics, reward and training diagnostics |
 | `harl/common/` and `harl/models/` | Buffers, normalization and feed-forward networks |
 

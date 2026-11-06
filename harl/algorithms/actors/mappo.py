@@ -4,14 +4,13 @@ The PPO loss follows HARL MAPPO, adapted to this repository's feed-forward
 interfaces, individual mixed rewards, calendar weights and forced-action masks.
 There is no sequential cross-agent likelihood correction or model-based target.
 """
-import copy
 import numpy as np
 import torch
 import torch.nn as nn
 from harl.utils.envs_tools import check
 from harl.utils.models_tools import get_grad_norm
 from harl.algorithms.actors.on_policy_base import OnPolicyBase
-from harl.algorithms.actors.happo import validate_policy_optimization, validate_kl_rollback
+from harl.algorithms.actors.happo import validate_ppo_epochs
 
 
 class MAPPO(OnPolicyBase):
@@ -23,17 +22,11 @@ class MAPPO(OnPolicyBase):
             act_space: (gym.spaces) action space.
             device: (torch.device) device to use for tensor operations.
         """
-        epochs, target_kl = validate_policy_optimization(args["ppo_epoch"], args.get("target_kl"))
-        rollback = validate_kl_rollback(args.get('kl_rollback', False), target_kl)
-        if args.get('joint_target_kl') is not None:
-            raise ValueError('MAPPO does not support joint_target_kl; use an optional local target_kl')
-        if target_kl is not None and act_space.__class__.__name__ != "Discrete":
-            raise ValueError("Exact categorical target_kl requires a Discrete action space")
+        epochs = validate_ppo_epochs(args["ppo_epoch"])
         super(MAPPO, self).__init__(args, obs_space, act_space, device)
 
         self.clip_param = args["clip_param"]
-        self.ppo_epoch, self.target_kl = epochs, target_kl
-        self.kl_rollback = rollback
+        self.ppo_epoch = epochs
         self.actor_num_mini_batch = args["actor_num_mini_batch"]
         self.entropy_coef = args["entropy_coef"]
         self.use_max_grad_norm = args["use_max_grad_norm"]
@@ -60,25 +53,6 @@ class MAPPO(OnPolicyBase):
             return_entropy_per_sample=True,
         )
         return torch.distributions.Categorical(logits=distribution.logits.detach().clone())
-
-    @torch.no_grad()
-    def rollout_kl(self, actor_buffer, before):
-        """Exact KL(old || new), averaged over controllable old-rollout states.
-
-        This guard measures the full action distribution, not just the sampled
-        actions or the current minibatch. Forced decisions do not contribute.
-        The caller either keeps a crossing step and stops subsequent epochs
-        (legacy mode), or restores it and stops (opt-in rollback mode).
-        """
-        active = torch.as_tensor(actor_buffer.active_masks[:-1].reshape(-1) > 0,
-                                 device=self.device)
-        if not active.any():
-            return 0.
-        divergence = torch.distributions.kl_divergence(before, self.rollout_distribution(actor_buffer))
-        value = divergence[active].mean().clamp_min(0.)
-        if not torch.isfinite(value):
-            raise FloatingPointError("Non-finite full-rollout actor KL")
-        return float(value)
 
     @torch.no_grad()
     def surrogate_metrics(self, actor_buffer, advantages, objective_weights):
@@ -127,32 +101,6 @@ class MAPPO(OnPolicyBase):
         return {name+'_'+suffix: value for name in before
                 for suffix, value in (('before', before[name]), ('after', after[name]),
                                       ('delta', after[name]-before[name]))}
-
-    def _snapshot_actor_update(self):
-        return (copy.deepcopy(self.actor.state_dict()),
-                copy.deepcopy(self.actor_optimizer.state_dict()),
-                [None if p.grad is None else p.grad.detach().clone() for p in self.actor.parameters()])
-
-    def _restore_actor_update(self, snapshot):
-        actor_state, optimizer_state, gradients = snapshot
-        self.actor.load_state_dict(actor_state)
-        self.actor_optimizer.load_state_dict(optimizer_state)
-        for parameter, gradient in zip(self.actor.parameters(), gradients):
-            parameter.grad = None if gradient is None else gradient.clone()
-
-    def _check_candidate_finite(self, result):
-        if any(not torch.isfinite(torch.as_tensor(value)).all() for value in result):
-            raise FloatingPointError('Non-finite candidate actor update metrics')
-        for name, value in self.actor.state_dict().items():
-            if not torch.isfinite(value).all():
-                raise FloatingPointError('Non-finite candidate actor state: '+name)
-        for parameter in self.actor.parameters():
-            if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
-                raise FloatingPointError('Non-finite candidate actor gradient')
-        for state in self.actor_optimizer.state.values():
-            for name, value in state.items():
-                if isinstance(value, torch.Tensor) and not torch.isfinite(value).all():
-                    raise FloatingPointError('Non-finite candidate Adam state: '+name)
 
     def update(self, sample):
         """Update actor network.
@@ -283,13 +231,7 @@ class MAPPO(OnPolicyBase):
         train_info["dist_entropy"] = 0
         train_info["actor_grad_norm"] = 0
         train_info["ratio"] = 0
-        budget_info = dict(optimizer_steps=0., optimizer_attempts=0., optimizer_rejected_steps=0.,
-                           ratio_samples=0.,
-                           ppo_epochs_completed=0., ppo_epochs_attempted=0., kl_early_stopped=0.)
-        if self.target_kl is not None:
-            budget_info['policy_kl'] = 0.
-        if self.kl_rollback:
-            budget_info['rejected_policy_kl'] = 0.
+        budget_info = dict(optimizer_steps=0., ratio_samples=0., ppo_epochs_completed=0.)
 
         if np.all(actor_buffer.active_masks[:-1] == 0.0):
             if diagnostics:
@@ -311,18 +253,9 @@ class MAPPO(OnPolicyBase):
         objective_weights = actor_buffer.discount_weights(self.args["gamma"])
         surrogate_before = (self.surrogate_metrics(actor_buffer, advantages, objective_weights)
                             if diagnostics else None)
-        effective_weights = objective_weights * (actor_buffer.active_masks[:-1]
-            if self.use_policy_active_masks else 1.)
-        # One reference for the entire actor update, never reset per candidate.
-        # Retain the legacy shuffling of zero-weight batches, while omitting
-        # needless snapshots, updates and KL checks in rollback mode.
-        before = (self.rollout_distribution(actor_buffer) if self.target_kl is not None and
-                  (not self.kl_rollback or np.any(effective_weights > 0.)) else None)
         num_updates = 0
         ratio_sum = 0.
         for _ in range(self.ppo_epoch):
-            budget_info['ppo_epochs_attempted'] += 1.
-            rejected = False
             data_generator = actor_buffer.feed_forward_generator_actor(
                 advantages, self.actor_num_mini_batch,
                 objective_weights=objective_weights,
@@ -331,28 +264,7 @@ class MAPPO(OnPolicyBase):
             for sample in data_generator:
                 effective = sample[-1] * (sample[3] if self.use_policy_active_masks else 1.)
                 has_objective = bool(np.any(effective > 0.))
-                snapshot = self._snapshot_actor_update() if self.kl_rollback and has_objective else None
-                budget_info['optimizer_attempts'] += float(has_objective)
-                try:
-                    result = self.update(sample)
-                    if snapshot is not None:
-                        self._check_candidate_finite(result)
-                        candidate_kl = self.rollout_kl(actor_buffer, before)
-                        if not np.isfinite(candidate_kl):
-                            raise FloatingPointError('Non-finite candidate actor KL')
-                except BaseException:
-                    if snapshot is not None:
-                        self._restore_actor_update(snapshot)
-                    raise
-                if snapshot is not None:
-                    if candidate_kl > self.target_kl:
-                        self._restore_actor_update(snapshot)
-                        budget_info['optimizer_rejected_steps'] += 1.
-                        budget_info['rejected_policy_kl'] = float(candidate_kl)
-                        budget_info['kl_early_stopped'] = 1.
-                        rejected = True
-                        break
-                    budget_info['policy_kl'] = float(candidate_kl)
+                result = self.update(sample)
                 policy_loss, dist_entropy, actor_grad_norm, imp_weights = result
 
                 train_info["policy_loss"] += policy_loss.item()
@@ -371,14 +283,7 @@ class MAPPO(OnPolicyBase):
                 num_updates += 1
                 budget_info['optimizer_steps'] += float(has_objective)
 
-            if rejected:
-                break  # Keep accepted candidates; omit the rest of this actor's budget.
             budget_info['ppo_epochs_completed'] += 1.
-            if self.target_kl is not None and not self.kl_rollback:
-                budget_info['policy_kl'] = self.rollout_kl(actor_buffer, before)
-                if budget_info['policy_kl'] > self.target_kl:
-                    budget_info['kl_early_stopped'] = 1.
-                    break
 
         for k in train_info.keys():
             train_info[k] /= max(num_updates, 1)

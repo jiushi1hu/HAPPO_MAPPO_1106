@@ -29,9 +29,6 @@ algo:
   share_param: false
   fixed_order: false
   ppo_epoch: 5
-  target_kl: null  # Opt-in trial: --ppo-epochs 20 --target-kl 0.01; baseline stays unchanged.
-  kl_rollback: false  # With target_kl, reject and restore crossing optimizer steps when explicitly enabled.
-  joint_target_kl: null  # Opt-in common-rollout five-actor command KL budget; requires kl_rollback.
   critic_epoch: 5
   actor_num_mini_batch: 1  # Keep every row of the 1825 x 6 rollout.
   critic_num_mini_batch: 1

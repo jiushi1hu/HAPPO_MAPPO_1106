@@ -110,10 +110,6 @@ class SharedMAPPOAgent:
         from harl.algorithms.actors.mappo import MAPPO
         return MAPPO.rollout_distribution(self, actor_buffer)
 
-    def rollout_kl(self, actor_buffer, before):
-        from harl.algorithms.actors.mappo import MAPPO
-        return MAPPO.rollout_kl(self, actor_buffer, before)
-
     def surrogate_metrics(self, actor_buffer, advantages, objective_weights):
         from harl.algorithms.actors.mappo import MAPPO
         return MAPPO.surrogate_metrics(self, actor_buffer, advantages, objective_weights)

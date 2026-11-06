@@ -7,8 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import yaml
-from harl.algorithms.actors.happo import (
-    validate_policy_optimization, validate_kl_rollback, validate_joint_target_kl)
+from harl.algorithms.actors.happo import validate_ppo_epochs
 from harl.algorithms.critics.v_critic import validate_value_normalization
 from harl.envs.cascade_reservoir.data_loader import (
     CascadeData, HEAD_MODELS, resolve_year_split, validate_service_scale)
@@ -48,17 +47,7 @@ def main(argv=None, *, experiment_runner=run_parallel_experiment,
     parser.add_argument('--gae-lambda',type=float,help='GAE trace parameter in [0,1]')
     parser.add_argument('--guaranteed-output-violation-weight',type=float,
                         help='Soft local reward cost per guaranteed-output violation; 0 restores relative-deficit-only costs')
-    parser.add_argument('--ppo-epochs',type=int,help='Maximum actor optimization epochs per collection round')
-    kl = parser.add_mutually_exclusive_group()
-    kl.add_argument('--target-kl',type=float,help='Exact actor KL early-stopping budget')
-    kl.add_argument('--no-kl-limit',action='store_true')
-    rollback = parser.add_mutually_exclusive_group()
-    rollback.add_argument('--kl-rollback',dest='kl_rollback',action='store_true')
-    rollback.add_argument('--no-kl-rollback',dest='kl_rollback',action='store_false')
-    parser.set_defaults(kl_rollback=None)
-    joint = parser.add_mutually_exclusive_group()
-    joint.add_argument('--joint-target-kl',type=float,help='Cumulative joint KL budget; requires actor rollback')
-    joint.add_argument('--no-joint-kl-limit',action='store_true')
+    parser.add_argument('--ppo-epochs',type=int,help='Actor optimization epochs per collection round')
     parser.add_argument('--head-model',choices=HEAD_MODELS)
     parser.add_argument('--guaranteed-output-scale',type=float,
                         help='Positive multiplier for reference guaranteed-output thresholds; defaults to environment YAML, 1 restores reference values')
@@ -118,16 +107,6 @@ def main(argv=None, *, experiment_runner=run_parallel_experiment,
         model['action_bins'] = args.action_bins
     if args.ppo_epochs is not None:
         algo['ppo_epoch'] = args.ppo_epochs
-    if args.target_kl is not None:
-        algo['target_kl'] = args.target_kl
-    elif args.no_kl_limit:
-        algo['target_kl'] = None
-    if args.kl_rollback is not None:
-        algo['kl_rollback'] = args.kl_rollback
-    if args.joint_target_kl is not None:
-        algo['joint_target_kl'] = args.joint_target_kl
-    elif args.no_joint_kl_limit:
-        algo['joint_target_kl'] = None
     if args.head_model is not None:
         physical['head_model'] = args.head_model
     for name in ('guaranteed_output_scale','ecological_flow_scale'):
@@ -160,9 +139,7 @@ def main(argv=None, *, experiment_runner=run_parallel_experiment,
             raise ValueError('Categorical control requires at least two action bins')
         algo['gamma'] = validate_discount_factor(algo['gamma'] if args.gamma is None else args.gamma)
         algo['gae_lambda'] = validate_gae_lambda(algo['gae_lambda'] if args.gae_lambda is None else args.gae_lambda)
-        algo['ppo_epoch'],algo['target_kl'] = validate_policy_optimization(algo['ppo_epoch'],algo.get('target_kl'))
-        algo['kl_rollback'] = validate_kl_rollback(algo.get('kl_rollback',False),algo['target_kl'])
-        algo['joint_target_kl'] = validate_joint_target_kl(algo.get('joint_target_kl'),algo['kl_rollback'])
+        algo['ppo_epoch'] = validate_ppo_epochs(algo['ppo_epoch'])
         validate_value_normalization(algo['use_clipped_value_loss'],train['use_valuenorm'])
         for name in ('critic_epoch','actor_num_mini_batch','critic_num_mini_batch'):
             algo[name] = positive_integer(algo[name],name)
